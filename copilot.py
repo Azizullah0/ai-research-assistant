@@ -1,21 +1,38 @@
 import ollama
+import json
+import os
 from reader import fetch_web_content
 
-def web_search(url: str):
-    return fetch_web_content(url)
+MEMORY_FILE = "memory.json"
+
+def save_memory(messages):
+    # Converting any complex objects to simple dictionaries before saving
+    clean_messages = []
+    for msg in messages:
+        if hasattr(msg, 'model_dump'):
+            clean_messages.append(msg.model_dump())
+        elif isinstance(msg, dict):
+            clean_messages.append(msg)
+        else:
+            # convert to dict manually
+            clean_messages.append({'role': msg.role, 'content': msg.content})
+            
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(clean_messages, f, indent=4)
+
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE, "r") as f:
+            return json.load(f)
+    return [{
+        'role': 'system', 
+        'content': "You are a helpful assistant. Use the 'web_search' tool for URLs."
+    }]
 
 def run_copilot():
-    print("--- AI Copilot Active (Type 'exit' to quit) ---")
-    
-    # IMPROVED SYSTEM PROMPT: Giving the AI a choice
-    messages = [{
-        'role': 'system', 
-        'content': """You are a helpful assistant. 
-        ONLY use the 'web_search' tool if:
-        1. The user explicitly provides a URL.
-        2. The user asks for information you cannot possibly know without checking a website.
-        Otherwise, just chat normally."""
-    }]
+    print("--- AI Copilot with Clean Memory ---")
+    messages = load_memory()
+    print(f"[*] Loaded {len(messages)} interactions.")
 
     while True:
         user_input = input("\nYou: ")
@@ -34,7 +51,7 @@ def run_copilot():
                 'parameters': {
                   'type': 'object',
                   'properties': {
-                    'url': {'type': 'string', 'description': 'The URL starting with http or https'},
+                    'url': {'type': 'string', 'description': 'The URL'},
                   },
                   'required': ['url'],
                 },
@@ -42,27 +59,24 @@ def run_copilot():
             }]
         )
 
-        # Check for tool calls
-        if response['message'].get('tool_calls'):
-            for tool in response['message']['tool_calls']:
-                url_to_check = tool['function']['arguments']['url']
-                print(f"[*] Agent decided to use tool on: {url_to_check}")
-                
-                result = web_search(url_to_check)
-                
-               
-                messages.append(response['message'])
-                
+        # Handle the response
+        msg = response['message']
+        
+        if msg.get('tool_calls'):
+            for tool in msg['tool_calls']:
+                result = fetch_web_content(tool['function']['arguments']['url'])
+                messages.append(msg) # Append the assistant's tool call
                 messages.append({'role': 'tool', 'content': result, 'name': 'web_search'})
                 
-                # Now the AI looks at the text and gives the final summary
                 final_response = ollama.chat(model='llama3.2', messages=messages)
                 print(f"\nCopilot: {final_response['message']['content']}")
+                messages.append(final_response['message'])
         else:
-            
-            print(f"\nCopilot: {response['message']['content']}")
-            
-            messages.append(response['message'])
+            print(f"\nCopilot: {msg['content']}")
+            messages.append(msg)
+
+        # SAVE AFTER EVERY INTERACTION
+        save_memory(messages)
 
 if __name__ == "__main__":
     run_copilot()
